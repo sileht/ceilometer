@@ -27,6 +27,7 @@ from oslo.config import cfg
 import pecan
 import pecan.testing
 
+from ceilometer.openstack.common import jsonutils
 from ceilometer.api import acl
 from ceilometer.api.v1 import app as v1_app
 from ceilometer.api.v1 import blueprint as v1_blueprint
@@ -49,6 +50,7 @@ class TestBase(db_test_base.TestBase):
         @self.app.before_request
         def attach_storage_connection():
             flask.request.storage_conn = self.conn
+            flask.request.alarm_storage_conn = self.alarm_conn
 
     def get(self, path, headers=None, **kwds):
         if kwds:
@@ -129,6 +131,39 @@ class FunctionalTest(db_test_base.TestBase):
     def tearDown(self):
         super(FunctionalTest, self).tearDown()
         pecan.set_config({}, overwrite=True)
+
+    def put_json(self, path, params, expect_errors=False, headers=None,
+                 extra_environ=None, status=None):
+        self.post_json(path=path, params=params, expect_errors=expect_errors,
+                       headers=headers, extra_environ=extra_environ,
+                       status=status, method="put")
+
+    def post_json(self, path, params, expect_errors=False, headers=None,
+                  method="post", extra_environ=None, status=None):
+        full_path = self.PATH_PREFIX + path
+        print '%s: %s %s' % (method.upper(), full_path, params)
+        response = getattr(self.app, "%s_json" % method)(
+            full_path,
+            params=params,
+            headers=headers,
+            status=status,
+            extra_environ=extra_environ,
+            expect_errors=expect_errors
+        )
+        print 'GOT:', response
+        return response
+
+    def delete(self, path, expect_errors=False, headers=None,
+               extra_environ=None, status=None):
+        full_path = self.PATH_PREFIX + path
+        print 'DELETE: %s' % (full_path)
+        response = self.app.delete(full_path,
+                                   headers=headers,
+                                   status=status,
+                                   extra_environ=extra_environ,
+                                   expect_errors=expect_errors)
+        print 'GOT:', response
+        return response
 
     def get_json(self, path, expect_errors=False, headers=None,
                  extra_environ=None, q=[], **params):

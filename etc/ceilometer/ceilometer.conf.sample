@@ -69,6 +69,40 @@
 #### (StrOpt) AMQP exchange to connect to if using RabbitMQ or Qpid
 
 
+######## defined in ceilometer.alarm.service ########
+
+# alarm_database_connection=mysql://localhost:3106/ceilometer-alarm
+#### (StrOpt) Alarm Database connection string
+
+######## defined in ceilometer.alarm.storage.sqlalchemy.models ########
+
+# alarm_mysql_engine=InnoDB
+#### (StrOpt) MySQL engine
+
+
+######## defined in ceilometer.alarm.storage.sqlalchemy.session ########
+
+# alarm_sql_connection_debug=0
+#### (IntOpt) Verbosity of SQL debugging information. 0=None,
+####          100=Everything
+
+# alarm_sql_connection_trace=false
+#### (BoolOpt) Add python stack traces to SQL as comment strings
+
+# alarm_sqlite_synchronous=true
+#### (BoolOpt) If passed, use synchronous mode for sqlite
+
+# alarm_sql_idle_timeout=3600
+#### (IntOpt) timeout before idle sql connections are reaped
+
+# alarm_sql_max_retries=10
+#### (IntOpt) maximum db connection retries during startup. (setting -1
+####          implies an infinite retry count)
+
+# alarm_sql_retry_interval=10
+#### (IntOpt) interval between retries of opening a sql connection
+
+
 ######## defined in ceilometer.api ########
 
 # metering_api_port=8777
@@ -301,4 +335,4 @@
 #### (StrOpt) Exchange name for Cinder notifications
 
 
-# Total option count: 72
+# Total option count: 73

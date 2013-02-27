@@ -109,7 +109,10 @@ class RESTControllerDirective(rst.Directive):
         # restore the blank line added as a spacer
         docstring.append(blank_line)
 
-        directive = http_directive('get', path, docstring)
+        method_name = method.__name__
+        if method_name.startswith('get'):
+            method_name = 'get'
+        directive = http_directive(method_name, path, docstring)
         for line in directive:
             yield line
 
@@ -151,6 +154,32 @@ class RESTControllerDirective(rst.Directive):
             for line in self.make_rst_for_method(
                     path,
                     controller.get_one):
+                yield line
+
+        if hasattr(controller, 'put') and controller.post.exposed:
+            app.info('  Method: put')
+            for line in self.make_rst_for_method(controller_path,
+                                                 controller.put):
+                yield line
+
+        if hasattr(controller, 'post') and controller.post.exposed:
+            app.info('  Method: %s' % controller.post)
+            funcdef = controller.post._wsme_definition
+            first_arg_name = funcdef.arguments[0].name
+            path = controller_path + '(' + first_arg_name + ')/'
+            for line in self.make_rst_for_method(
+                    path,
+                    controller.post):
+                yield line
+
+        if hasattr(controller, 'delete') and controller.delete.exposed:
+            app.info('  Method: %s' % controller.delete)
+            funcdef = controller.delete._wsme_definition
+            first_arg_name = funcdef.arguments[0].name
+            path = controller_path + '(' + first_arg_name + ')/'
+            for line in self.make_rst_for_method(
+                    path,
+                    controller.delete):
                 yield line
 
         # Look for exposed custom methods

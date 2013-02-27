@@ -24,6 +24,7 @@ from nose.plugins import skip
 from oslo.config import cfg
 
 from ceilometer import storage
+from ceilometer.alarm import storage as alarm_storage
 from ceilometer.tests import base as test_base
 
 
@@ -37,6 +38,7 @@ class TestBase(test_base.TestCase):
     # TODO(jd) remove it, so we're sure we run test on the backend we want,
     # not this default one by mistake
     database_connection = 'mongodb://__test__'
+    alarm_database_connection = 'sqlite://'
 
     def setUp(self):
         super(TestBase, self).setUp()
@@ -44,3 +46,8 @@ class TestBase(test_base.TestCase):
         self.conn = storage.get_connection(cfg.CONF)
         self.conn.upgrade()
         self.conn.clear()
+
+        cfg.CONF.alarm_database_connection = self.alarm_database_connection
+        self.alarm_conn = alarm_storage.get_connection(cfg.CONF)
+        self.alarm_conn.upgrade()
+        self.alarm_conn.clear()

@@ -44,6 +44,22 @@ class BinDbsyncTestCase(unittest.TestCase):
         os.unlink(self.tempfile)
 
 
+class BinAlarmDbsyncTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tempfile = tempfile.mktemp()
+        with open(self.tempfile, 'w') as tmp:
+            tmp.write("[DEFAULT]\n")
+            tmp.write("alarm_database_connection=sqlite://\n")
+
+    def test_dbsync_run(self):
+        subp = subprocess.Popen(["../bin/ceilometer-alarm-dbsync",
+                                 "--config-file=%s" % self.tempfile])
+        self.assertEqual(subp.wait(), 0)
+
+    def tearDown(self):
+        os.unlink(self.tempfile)
+
+
 class BinSendCounterTestCase(unittest.TestCase):
     def setUp(self):
         self.tempfile = tempfile.mktemp()
@@ -78,10 +94,14 @@ class BinApiTestCase(unittest.TestCase):
             tmp.write(
                 "rpc_backend=ceilometer.openstack.common.rpc.impl_fake\n")
             tmp.write("database_connection=log://localhost\n")
+            tmp.write("alarm_database_connection=sqlite://\n")
             tmp.write(
                 "auth_strategy=noauth\n")
             tmp.write(
                 "debug=true\n")
+        subp = subprocess.Popen(["../bin/ceilometer-alarm-dbsync",
+                                 "--config-file=%s" % self.tempfile])
+        subp.wait()
         self.subp = subprocess.Popen(["../bin/ceilometer-api",
                                       "--config-file=%s" % self.tempfile])
 

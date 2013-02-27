@@ -28,7 +28,13 @@
 # [GET   ] /meters/<meter> -- list the samples for this meter
 # [PUT   ] /meters/<meter> -- update the meter (not the samples)
 # [DELETE] /meters/<meter> -- delete the meter and samples
+# [GET   ] /alarms -- list the alarms
+# [POST  ] /alarms -- insert a new alarm
+# [GET   ] /alarms/<alarm> -- show the definition of a alarm
+# [PUT   ] /alarms/<alarm> -- update the definition of a alarm
+# [DELETE] /alarms/<alarm> -- delete a alarm
 #
+
 import datetime
 import inspect
 import pecan
@@ -38,13 +44,22 @@ import wsme
 import wsmeext.pecan as wsme_pecan
 from wsme import types as wtypes
 
+from oslo.config import cfg
+
+from ceilometer import exception
+from ceilometer import policy
 from ceilometer.openstack.common import log
 from ceilometer.openstack.common import timeutils
+from ceilometer.openstack.common import rpc
+from ceilometer.openstack.common import context
+from ceilometer.openstack.common.gettextutils import _
 from ceilometer import storage
-
+from ceilometer.alarm.alarm import Alarm as AlarmModel
+from ceilometer.alarm.alarm import STATE_MAP
 
 LOG = log.getLogger(__name__)
 
+cfg.CONF.import_opt("alarms_topic", "ceilometer.alarm.service")
 
 operation_kind = wtypes.Enum(str, 'lt', 'le', 'eq', 'ne', 'ge', 'gt')
 
@@ -54,6 +69,16 @@ class _Base(wtypes.Base):
     @classmethod
     def from_db_model(cls, m):
         return cls(**(m.as_dict()))
+
+    def as_dict(self, db_model):
+        valid_keys = inspect.getargspec(db_model.__init__)[0]
+        if 'self' in valid_keys:
+            valid_keys.remove('self')
+
+        return dict((k, getattr(self, k))
+                    for k in valid_keys
+                    if hasattr(self, k) and
+                    getattr(self, k) != wsme.Unset)
 
 
 class Query(_Base):
@@ -526,8 +551,235 @@ class ResourcesController(rest.RestController):
         return resources
 
 
+class Alarm(_Base):
+    """One category of measurements.
+    """
+
+    id = int
+    "The ID of the alarm"
+
+    name = wtypes.text
+    "The name for the alarm"
+
+    description = wtypes.text
+    "The description of the alarm"
+
+    counter_name = wtypes.text
+    "The name of counter"
+
+    project_id = wtypes.text
+    "The ID of the project or tenant that owns the alarm"
+
+    user_id = wtypes.text
+    "The ID of the user who last triggered an update to the alarm"
+
+    comparison_operator = wtypes.Enum(str, 'lt', 'le', 'eq', 'ne', 'ge', 'gt')
+    "The comparaison of the alarm threshold"
+
+    threshold = float
+    "The threshold of the alarm"
+
+    statistic = wtypes.Enum(str, 'maximum', 'minimum', 'average', 'sum',
+                            'sample_count')
+    "The statistic to compare to the threshold"
+
+    enabled = bool
+    "This alarm is enabled?"
+
+    evaluation_period = float
+    "The number of period to evaluate with the threshold"
+
+    aggregate_period = float
+    "The time range of a aggregate of metric to evaluate with the threshold"
+
+    timestamp = datetime.datetime
+    "The date of the last alarm definition update"
+
+    state = wtypes.Enum(str, 'ok', 'alarm', 'insufficient data')
+    "The state offset the alarm"
+
+    state_timestamp = datetime.datetime
+    "The date of the last alarm state changed"
+
+    ok_actions = [wtypes.text]
+    "The actions to do when alarm state change to ok"
+
+    alarm_actions = [wtypes.text]
+    "The actions to do when alarm state change to alarm"
+
+    insufficient_data_actions = [wtypes.text]
+    "The actions to do when alarm state change to insufficient data"
+
+    matching_metadata = {wtypes.text: wtypes.text}
+    "The matching_metadata of the alarm"
+
+    #http://pythonhosted.org/WSME/
+    #http://pythonhosted.org/WSME/types.html#native-types
+
+    def __init__(self, **kwargs):
+        # Use user friendly name for state
+        if 'state' in kwargs:
+            kwargs['state'] = STATE_MAP[kwargs['state']]
+        super(Alarm, self).__init__(**kwargs)
+
+    @classmethod
+    def sample(cls):
+        return cls(id=None,
+                   name="SwiftObjectAlarm",
+                   description="A alarm",
+                   counter_name="storage.objects",
+                   comparison_operator="gt",
+                   threshold=200,
+                   statistic="average",
+                   user_id="c96c887c216949acbdfbd8b494863567",
+                   project_id="c96c887c216949acbdfbd8b494863567",
+                   evaluation_period=240.0,
+                   aggregate_period=2,
+                   enabled=True,
+                   timestamp=datetime.datetime.utcnow(),
+                   state=0,
+                   state_timestamp=datetime.datetime.utcnow(),
+                   ok_actions=["http://site:8000/ok"],
+                   alarm_actions=["http://site:8000/alarm"],
+                   insufficient_data_actions=["http://site:8000/nodata"],
+                   matching_metadata={"project_id":
+                                      "c96c887c216949acbdfbd8b494863567"}
+                   )
+
+
+class AlarmsController(rest.RestController):
+    """Works on alarms."""
+
+    def _get_user_context(self):
+        """Get the context of the request
+        """
+
+        user = pecan.request.headers.get('X-User-Id', None)
+        project = pecan.request.headers.get('X-Project-Id', None)
+        is_admin = policy.check_is_admin([pecan.request.headers.get('X-Role')])
+        auth_token = pecan.request.headers.get('X-Auth-Token')
+
+        return context.RequestContext(auth_token=auth_token, user=user,
+                                      tenant=project, is_admin=is_admin)
+
+    def _input_sanitize(self, data):
+        """Check and fix the definition of the alarm
+        """
+        # some fields are forbiden
+        for k in ["id", "timestamp", "state_timestamp", "user_id",
+                  "project_id"]:
+            if getattr(data, k) is not wsme.Unset:
+                raise wsme.exc.ClientSideError(_("%k should not be provided"))
+
+        data.timestamp = timeutils.utcnow()
+        LOG.debug("HEADERS %s", dict(pecan.request.headers))
+
+        #FIXME(sileht): project_id can be not exists ?
+        data.user_id = pecan.request.headers.get('X-User-Id', None)
+        data.project_id = pecan.request.headers.get('X-Project-Id', None)
+
+        if not policy.check_is_admin([pecan.request.headers.get('X-Role')]):
+            data.matching_metadata['project_id'] = data.project_id
+
+    @wsme_pecan.wsexpose(None, body=Alarm)
+    def post(self, data):
+        """Update a alarm
+
+        :param id: id of the alarm
+        :param data: definition of the alarm
+        """
+
+        self._input_sanitize(data)
+        kwargs = data.as_dict(AlarmModel)
+        try:
+            alarm = AlarmModel(**kwargs)
+        except:
+            raise wsme.exc.ClientSideError(_("Alarm incorrect"))
+        alarm = pecan.request.alarm_storage_conn.alarm_add(alarm)
+        msg = {
+            'method': 'add_or_update_alarm',
+            'version': '1.0',
+            'args': {'data': alarm.as_dict()},
+        }
+        rpc.cast(self._get_user_context(), cfg.CONF.alarms_topic, msg)
+
+    @wsme_pecan.wsexpose(None, int, body=Alarm)
+    def put(self, id, data):
+        """Add a alarm
+
+        :param id: id of the alarm
+        :param data: definition of the alarm
+        """
+        self._input_sanitize(data)
+        kwargs = data.as_dict(AlarmModel)
+
+        try:
+            alarm = pecan.request.alarm_storage_conn.alarm_get(id)
+        except exception.AlarmNotFound:
+            raise wsme.exc.ClientSideError(_("Unknown alarm"))
+
+        for k, v in kwargs.iteritems():
+            if k == 'state':
+                alarm.state_timestamp = timeutils.utcnow()
+            setattr(alarm, k, v)
+
+        pecan.request.alarm_storage_conn.alarm_update(alarm)
+        msg = {
+            'method': 'add_or_update_alarm',
+            'version': '1.0',
+            'args': {'data': alarm.as_dict()},
+        }
+        rpc.cast(self._get_user_context(), cfg.CONF.alarms_topic, msg)
+
+    @wsme_pecan.wsexpose(None, int, status_code=204)
+    def delete(self, id):
+        """Delete a alarm
+
+        :param id: id of the alarm
+        """
+        try:
+            pecan.request.alarm_storage_conn.alarm_delete(id)
+        except exception.AlarmNotFound:
+            raise wsme.exc.ClientSideError(_("Unknown alarm"))
+        msg = {
+            'method': 'delete_alarm',
+            'version': '1.0',
+            'args': {'id': id},
+        }
+        rpc.cast(self._get_user_context(), cfg.CONF.alarms_topic, msg)
+
+    @wsme_pecan.wsexpose(Alarm, int)
+    def get_one(self, id):
+        """Return a alarm
+
+        :param id: id of the alarm
+        """
+
+        try:
+            alarm = pecan.request.alarm_storage_conn.alarm_get(id)
+        except exception.AlarmNotFound:
+            raise wsme.exc.ClientSideError(_("Unknown alarm"))
+
+        alarm = Alarm.from_db_model(alarm)
+        return alarm
+
+    @wsme_pecan.wsexpose([Alarm], [Query])
+    def get_all(self, q=[]):
+        """Return all known alarms
+
+        :param q: Filter rules for the alarms to be returned.
+        """
+        #FIXME(sileht): not sure its useful to use _query_to_kwargs
+        kwargs = _query_to_kwargs(q,
+                                  pecan.request.alarm_storage_conn.alarm_list)
+        return [Alarm.from_db_model(
+            pecan.request.alarm_storage_conn.alarm_get(m))
+            for m in pecan.request.alarm_storage_conn.alarm_list(**kwargs)]
+
+
 class V2Controller(object):
     """Version 2 API controller root."""
 
     resources = ResourcesController()
     meters = MetersController()
+    alarms = AlarmsController()
