@@ -78,7 +78,8 @@ setuptools.setup(
              'bin/ceilometer-agent-central',
              'bin/ceilometer-api',
              'bin/ceilometer-collector',
-             'bin/ceilometer-dbsync'],
+             'bin/ceilometer-dbsync',
+             'bin/ceilometer-alarm'],
 
     py_modules=[],
 

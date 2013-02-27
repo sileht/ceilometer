@@ -1,0 +1,14 @@
+[
+    {
+        "name": "SwiftObjectAlarm",
+        "comparison_operator": "ge",
+        "counter_name": "storage.objects",
+        "period": 10,
+        "resource_id": "fbd24a98f43d4811be0891e4668bba7e",
+        "statistic": "avg",
+        "threshold": 2,
+        "alarm_action": "rm -f /tmp/alarm_* ; set > /tmp/alarm_alarm",
+        "ok_action": "rm -f /tmp/alarm_* ; set > /tmp/alarm_ok",
+        "insufficient_data_action": "rm -f /tmp/alarm_* ; set > /tmp/alarm_insufficient_data"
+    }
+]

@@ -67,7 +67,11 @@
 
 # control_exchange=ceilometer
 #### (StrOpt) AMQP exchange to connect to if using RabbitMQ or Qpid
+#
+######## defined in ceilometer.alarm.service ########
 
+# alarm_file=alarms.json
+#### (StrOpt) JSON file representing ceilometer alarms
 
 ######## defined in ceilometer.api ########
 
@@ -299,4 +303,4 @@
 #### (StrOpt) Exchange name for Cinder notifications
 
 
-# Total option count: 72
+# Total option count: 73
