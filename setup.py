@@ -121,6 +121,11 @@ setuptools.setup(
     objectstore = ceilometer.objectstore.swift:SwiftPollster
     kwapi = ceilometer.energy.kwapi:KwapiPollster
 
+    [ceilometer.alarm.storage]
+    mysql = ceilometer.alarm.storage.impl_sqlalchemy:SQLAlchemyStorage
+    postgresql = ceilometer.alarm.storage.impl_sqlalchemy:SQLAlchemyStorage
+    sqlite = ceilometer.alarm.storage.impl_sqlalchemy:SQLAlchemyStorage
+
     [ceilometer.storage]
     log = ceilometer.storage.impl_log:LogStorage
     mongodb = ceilometer.storage.impl_mongodb:MongoDBStorage

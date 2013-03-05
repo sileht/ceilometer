@@ -46,4 +46,16 @@ class CeilometerException(Exception):
 
 class InvalidComparisonOperator(CeilometerException):
     message = _("The comparison operator '%(comparison_operator)s' of the \
-                alarm '%(name)' is invalid")
+                alarm '%(name)s' is invalid")
+
+
+class AggregateNotFound(CeilometerException):
+    message = _("The aggregate %(aggregate)s doesn't exists")
+
+
+class AlarmNotFound(CeilometerException):
+    message = _("The alarm %(alarm)s doesn't exists")
+
+
+class AlarmParameterUnknown(CeilometerException):
+    message = _("The alarm %(name)s have unknown parameter: %(params)s")

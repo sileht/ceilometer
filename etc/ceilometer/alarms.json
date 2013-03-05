@@ -1,14 +1,15 @@
 [
     {
         "name": "SwiftObjectAlarm",
-        "comparison_operator": "ge",
+        "comparison_operator": "gt",
         "counter_name": "storage.objects",
-        "period": 10,
-        "resource_id": "fbd24a98f43d4811be0891e4668bba7e",
-        "statistic": "avg",
+        "aggregate_period": 30,
+	"evaluation_period": 2,
+        "statistic": "average",
+        "alarm_metadatas": [["project_id", "fbd24a98f43d4811be0891e4668bba7e"]],
         "threshold": 2,
-        "alarm_action": "rm -f /tmp/alarm_* ; set > /tmp/alarm_alarm",
-        "ok_action": "rm -f /tmp/alarm_* ; set > /tmp/alarm_ok",
-        "insufficient_data_action": "rm -f /tmp/alarm_* ; set > /tmp/alarm_insufficient_data"
+        "alarm_actions": [ "rm -f /tmp/alarm_* ; set > /tmp/alarm_alarm" ],
+        "ok_actions": [ "rm -f /tmp/alarm_* ; set > /tmp/alarm_ok" ],
+        "insufficient_data_actions": ["rm -f /tmp/alarm_* ; set > /tmp/alarm_insufficient_data" ]
     }
 ]

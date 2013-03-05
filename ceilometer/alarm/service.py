@@ -16,17 +16,12 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import os
-
 from oslo.config import cfg
 
-from ceilometer import exception
 from ceilometer import service
-from ceilometer import storage
-from ceilometer import utils
+from ceilometer.alarm import storage
 from ceilometer.alarm.alarm import Alarm
 from ceilometer.collector import meter as meter_api
-from ceilometer.openstack.common import jsonutils
 from ceilometer.openstack.common import log
 from ceilometer.openstack.common import timeutils
 from ceilometer.openstack.common.rpc import dispatcher as rpc_dispatcher
@@ -47,34 +42,10 @@ class AlarmService(service.PeriodicService):
 
     def start(self):
         super(AlarmService, self).start()
-        self._load_alarms()
 
         storage.register_opts(cfg.CONF)
         self.storage_engine = storage.get_engine(cfg.CONF)
         self.storage_conn = self.storage_engine.get_connection(cfg.CONF)
-
-    def _load_alarms(self):
-        self._alarms = []
-        self._alarms_cache = {}
-        self._alarms_path = cfg.CONF.alarms_file
-
-        if not os.path.exists(self._alarms_path):
-            self._alarms_path = cfg.CONF.find_file(self._alarms_path)
-        if not self._alarms_path:
-            raise cfg.ConfigFilesNotFoundError([cfg.CONF.alarms_file])
-
-        utils.read_cached_file(self._alarms_path, self._alarms_cache,
-                               reload_func=self._set_alarms)
-
-    def _set_alarms(self, data):
-        self._alarms = []
-        for data in jsonutils.loads(data):
-            try:
-                alarm = Alarm(**data)
-            except exception.InvalidComparisonOperator:
-                LOG.exception(_("Fail to load a alarm"))
-            else:
-                self._alarms.append(alarm)
 
     def periodic_tasks(self, context):
         pass
@@ -111,9 +82,39 @@ class AlarmService(service.PeriodicService):
                     meter)
 
     def _check_alarms(self, meter):
-        for alarm in self._get_alarms_for_meter(meter):
-            alarm.check_state(self.storage_conn, meter)
+        #TODO: each alarm.check_state should be in a thread
 
-    def _get_alarms_for_meter(self, meter):
-        return [alarm for alarm in self._alarms
-                if alarm.match_meter(meter)]
+        #TODO: filter with counter metadata
+        # metaquery = []
+        # for k in ['counter_type', 'user_id', 'project_id', 'resource_id']:
+        #     if k in meter:
+        #         metaquery.append((k, meter[k]))
+        #
+        # if 'resource_metadata' in metaquery:
+        #     for k, v in meter['resource_metadata'].iteritems():
+        #         metaquery.append((k, v))
+
+        for values in self.storage_conn.alarm_list(
+                counter_name=meter['counter_name']):
+
+            alarm = Alarm(**values)
+            aggregates = list(self.storage_conn.aggregated_metric_list(
+                alarm.id,
+                limit=alarm.evaluation_period,
+                start=alarm.oldest_timestamp
+            ))
+
+            if not aggregates:
+                aggregates = []
+
+            alarm.update_aggregated_metric_data(meter, aggregates)
+
+            self.storage_conn.aggregated_metric_update(
+                aggregates[0].get('id', None),
+                aggregates[0]
+            )
+
+            if alarm.check_state(aggregates):
+                self.storage_conn.alarm_update_state(alarm.id,
+                                                     alarm.state,
+                                                     alarm.state_timestamp)

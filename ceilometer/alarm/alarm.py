@@ -16,13 +16,15 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import datetime
 import operator
 import subprocess
 
 from ceilometer import exception
-from ceilometer import storage
+
 from ceilometer.openstack.common import jsonutils
 from ceilometer.openstack.common import log
+from ceilometer.openstack.common import timeutils
 
 LOG = log.getLogger(__name__)
 
@@ -30,33 +32,49 @@ ALARM_INSUFFICIENT_DATA = 0x00
 ALARM_OK = 0x01
 ALARM_ALARM = 0x02
 
-_STATE_MAP = {
-    ALARM_INSUFFICIENT_DATA: 'insufficient data',
-    ALARM_OK: 'ok',
-    ALARM_ALARM: 'alarm',
-}
-
 
 class Alarm(object):
-    def __init__(self, name, counter_name, comparison_operator,
-                 threshold, statistic, period, **kwargs):
-        self.name = name
-        self.counter_name = counter_name
-        self.comparison_operator = comparison_operator
-        self.threshold = threshold
-        self.statistic = statistic
-        self.period = period
 
+    _STATE_MAP = {
+        ALARM_INSUFFICIENT_DATA: 'insufficient data',
+        ALARM_OK: 'ok',
+        ALARM_ALARM: 'alarm',
+    }
+
+    def __init__(self, **kwargs):
+
+        self.id = kwargs.pop('id', None)
+        self.enabled = kwargs.pop('enabled', True)
+        self.name = kwargs.pop('name')
         self.description = kwargs.pop('description', None)
+        self.timestamp = kwargs.pop('timestamp', timeutils.utcnow())
+        self.counter_name = kwargs.pop('counter_name')
 
-        self.resource_id = kwargs.pop('resource_id', None)
+        #TODO: Should be mandatory
+        self.user_id = kwargs.pop('user_id', None)
+        self.project_id = kwargs.pop('project_id', None)
 
-        self.ok_action = kwargs.pop('ok_action', None)
-        self.alarm_action = kwargs.pop('alarm_action', None)
-        self.insufficient_data_action = kwargs.pop('insufficient_data_action',
-                                                   None)
+        self.comparison_operator = kwargs.pop('comparison_operator')
+        self.threshold = kwargs.pop('threshold')
+        self.statistic = kwargs.pop('statistic')
 
-        self.state = ALARM_INSUFFICIENT_DATA
+        self.evaluation_period = kwargs.pop('evaluation_period')
+        self.aggregate_period = kwargs.pop('aggregate_period')
+
+        self.state = kwargs.pop('state', ALARM_INSUFFICIENT_DATA)
+        self.state_timestamp = kwargs.pop('state_timestamp',
+                                          timeutils.utcnow())
+
+        self.ok_actions = kwargs.pop('ok_actions', [])
+        self.alarm_actions = kwargs.pop('alarm_actions', [])
+        self.insufficient_data_actions = kwargs.pop(
+            'insufficient_data_actions', [])
+
+        self.alarm_metadatas = kwargs.pop('alarm_metadatas', [])
+
+        if kwargs:
+            raise exception.AlarmParameterUnknown(name=self.name,
+                                                  params=kwargs)
 
         try:
             getattr(operator, self.comparison_operator)
@@ -68,22 +86,13 @@ class Alarm(object):
         """
         Other fields we should have (or calculate the value) for CloudWatch API
 
-        self.<*>_action should be a list of action
-
         self.history = []
-        self.last_modified = None  # datetime ?
-        self.actions_enabled = True
         self.arn = ""
 
         self.unit = None
 
-        self.dimensions = None  # howto match this to a metric data, tenant,
-                                  user, instance, container ?
-
         self.namespace = None  # howto match this to a metric data,
         the source of the metric ? (ie : 'EC2: Instance Metric')
-
-        self.state_last_modified = None  # datetime
 
         # Unit handle by CloudWatch
         # Seconds, Microseconds, Milliseconds Bytes, Kilobytes, Megabytes,
@@ -95,67 +104,118 @@ class Alarm(object):
 
         """
 
-    def _state_reason(self):
-        return  _("Threshold %s reached") % self.threshold
-    state_reason = property(_state_reason)
+    def __getitem__(self, k):
+        return getattr(self, k)
 
-    def _state_reason_data(self):
+    def iteritems(self):
+        for k in ['id', 'enabled', 'name', 'description', 'counter_name',
+                  'comparison_operator', 'threshold', 'statistic',
+                  'evaluation_period', 'aggregate_period',
+                  'user_id', 'project_id', 'timestamp',
+                  'state', 'state_timestamp', 'alarm_metadatas',
+                  'ok_actions', 'alarm_actions', 'insufficient_data_actions']:
+            yield k, getattr(self, k)
+
+    def items(self):
+        return dict(self.iteritems())
+
+    @property
+    def oldest_timestamp(self):
+        """oldest timestamp that could be used for the alarm
+        """
+        timestamp = timeutils.utcnow()
+        timestamp -= datetime.timedelta(seconds=(self.evaluation_period *
+                                        self.aggregate_period))
+        timestamp -= datetime.timedelta(seconds=1)
+        return timestamp
+
+    @property
+    def state_reason(self):
+        return  _('Threshold %s reached') % self.threshold
+
+    @property
+    def state_reason_data(self):
         return jsonutils.dumps({
-            "threshold": self.threshold,
+            'threshold': self.threshold,
         })
-    state_reason_data = property(_state_reason_data)
 
-    def match_meter(self, meter):
-        """Check if the alarm apply to this meter
-        Actually only the meter is checked but more checks should be done
-        (like ressource_id, project_id, metadata, ....)"""
+    def update_aggregated_metric_data(self, meter, aggregates):
+        if len(aggregates) == 0:
+            need_new_aggregate = True
+        else:
+            need_new_aggregate = aggregates[0].get('timestamp') <= \
+                timeutils.utcnow() - \
+                datetime.timedelta(seconds=self.aggregate_period)
 
-        return self.counter_name == meter['counter_name'] and \
-            (not self.resource_id or
-                self.resource_id == meter['resource_id'])
+        if need_new_aggregate:
+            aggregates.insert(0, {
+                'alarm_id': self.id,
+                'timestamp': timeutils.utcnow(),
+            })
 
-    def check_state(self, conn, meter):
+        aggregate = aggregates[0]
+
+        m = meter['counter_volume']
+        aggregate['sum'] = aggregate.get('sum', 0.0) + m
+        aggregate['maximum'] = max(aggregate.get('maximum', m), m)
+        aggregate['minimum'] = min(aggregate.get('minimum', m), m)
+        aggregate['sample_count'] = aggregate.get('sample_count', 0.0) + 1.0
+        aggregate['average'] = aggregate['sum'] / aggregate['sample_count']
+
+        return aggregates
+
+    def check_state(self, aggregates):
+        """this function assume that 'aggregates' contains only the
+        aggregate that match the alarm/evaluation_period/aggregate_period
+
+        return True if state change
+        """
+
         LOG.debug('alarm %s: checking state for meter %s', self.name,
-                  meter)
-        f = storage.EventFilter(
-            meter=meter['counter_name'],
-            resource=self.resource_id,
-        )
-        result = conn.get_meter_statistics(f, period=self.period)[0]
-        LOG.debug("alarm %s: statistic result: %s", self.name, result)
+                  self.counter_name)
 
         op = getattr(operator, self.comparison_operator)
 
-        #FIXME: this is a arbitrary period threshold
-        #but how to know when we have enough data to handle or not the actio
-        period_threshold = 10
-
-        if int(result['duration'] * 60.0) - result['period'] \
-                + period_threshold < 0:
+        if len(aggregates) < self.evaluation_period:
             current_state = ALARM_INSUFFICIENT_DATA
-        elif op(result[self.statistic], float(self.threshold)):
-            current_state = ALARM_ALARM
         else:
             current_state = ALARM_OK
+            for aggregate in aggregates:
+                if op(aggregate[self.statistic], float(self.threshold)):
+                    current_state = ALARM_ALARM
+                    break
 
         if current_state != self.state:
             LOG.debug('alarm %s: state change from %s to %s',
-                      self.name, _STATE_MAP[self.state],
-                      _STATE_MAP[current_state])
+                      self.name, self._STATE_MAP[self.state],
+                      self._STATE_MAP[current_state])
+
             self.state = current_state
-            self._do_action(result)
+            self.state_timestamp = timeutils.utcnow()
+            self._record_state_changed_to_history()
+            self._do_actions()
+            return True
+        return False
 
-    def _do_action(self, result):
-        if self.state == ALARM_ALARM:
-            self._execute(self.alarm_action, result)
+    def _record_state_changed_to_history(self):
+        """History not yet implemented
+        """
+        pass
+
+    def _do_actions(self):
         if self.state == ALARM_OK:
-            self._execute(self.ok_action, result)
+            for action in self.ok_actions:
+                self._execute(action)
+        if self.state == ALARM_ALARM:
+            for action in self.alarm_actions:
+                self._execute(action)
         if self.state == ALARM_INSUFFICIENT_DATA:
-            self._execute(self.insufficient_data_action, result)
+            for action in self.insufficient_data_actions:
+                self._execute(action)
 
-    def _execute(self, action, result):
+    def _execute(self, action):
         env = {}
-        for k, v in result.iteritems():
+        for k, v in self.iteritems():
             env["CEILOMETER_ALARM_%s" % k.upper()] = str(v)
         try:
             p = subprocess.Popen(action, shell=True, env=env)

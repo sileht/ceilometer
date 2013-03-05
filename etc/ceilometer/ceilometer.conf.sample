@@ -67,11 +67,16 @@
 
 # control_exchange=ceilometer
 #### (StrOpt) AMQP exchange to connect to if using RabbitMQ or Qpid
-#
+
+
 ######## defined in ceilometer.alarm.service ########
 
 # alarm_file=alarms.json
 #### (StrOpt) JSON file representing ceilometer alarms
+
+# database_alarm_connection=mysql://localhost:3106/ceilometer-alarm
+#### (StrOpt) Alarm Database connection string
+
 
 ######## defined in ceilometer.api ########
 

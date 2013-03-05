@@ -18,26 +18,29 @@
 """Tests for ceilometer/alarm/alarm.py
 """
 
+import datetime
 import os
 
-from mox import IgnoreArg
-
-from ceilometer import storage
 from ceilometer.alarm.alarm import Alarm, ALARM_OK, ALARM_ALARM, \
     ALARM_INSUFFICIENT_DATA
 from ceilometer.exception import InvalidComparisonOperator
+from ceilometer.exception import AlarmParameterUnknown
+from ceilometer.openstack.common import timeutils
 from ceilometer.tests import base as tests_base
 
 TEST_ALARM = {
+    'id': '1',
     'name': 'SwiftObjectAlarm',
     'counter_name': 'storage.objects',
-    'comparison_operator': 'ge',
+    'comparison_operator': 'gt',
     'threshold': 2.0,
-    'statistic': 'avg',
-    'period': 60,
-    'ok_action': 'touch ceilometer_alarm_test_ok',
-    'alarm_action': 'touch ceilometer_alarm_test_alarm',
-    'insufficient_data_action': 'touch ceilometer_alarm_test_insufficient_data'
+    'statistic': 'average',
+    'evaluation_period': 1,
+    'aggregate_period': 60,
+    'ok_actions': ['touch ceilometer_alarm_test_ok'],
+    'alarm_actions': ['touch ceilometer_alarm_test_alarm'],
+    'insufficient_data_actions':
+    ['touch ceilometer_alarm_test_insufficient_data']
 }
 
 
@@ -54,145 +57,180 @@ class TestAlarm(tests_base.TestCase):
         self._remove_alarm_testfile()
 
     def test_create_alarm(self):
-        alarm = Alarm('name', 'counter_name', 'eq', 2.0, 'sum', 60,
-                      resource_id='id', ok_action='ok_action',
-                      alarm_action='alarm_action',
-                      insufficient_data_action='insufficient_data_action')
+        alarm = Alarm(id='1',
+                      name='name',
+                      counter_name='counter_name',
+                      comparison_operator='eq',
+                      threshold=2.0,
+                      statistic='sum',
+                      evaluation_period=1,
+                      aggregate_period=60,
+                      ok_actions=['ok_action'],
+                      alarm_actions=['alarm_action'],
+                      insufficient_data_actions=['insufficient_data_action'],
+                      enabled=False,
+                      description="desc"
+                      )
+        self.assertEqual(alarm.id, '1')
+        self.assertEqual(alarm.enabled, False)
         self.assertEqual(alarm.name, 'name')
+        self.assertEqual(alarm.description, 'desc')
         self.assertEqual(alarm.counter_name, 'counter_name')
         self.assertEqual(alarm.comparison_operator, 'eq')
         self.assertEqual(alarm.threshold, 2.0)
         self.assertEqual(alarm.statistic, 'sum')
-        self.assertEqual(alarm.period, 60)
-        self.assertEqual(alarm.resource_id, 'id')
-        self.assertEqual(alarm.ok_action, 'ok_action')
-        self.assertEqual(alarm.alarm_action, 'alarm_action')
-        self.assertTrue(alarm.insufficient_data_action ==
-                        'insufficient_data_action')
+        self.assertEqual(alarm.aggregate_period, 60)
+        self.assertEqual(alarm.evaluation_period, 1)
+        self.assertEqual(alarm.ok_actions, ['ok_action'])
+        self.assertEqual(alarm.alarm_actions, ['alarm_action'])
+        self.assertEqual(alarm.insufficient_data_actions,
+                         ['insufficient_data_action'])
 
     def test_create_alarm_with_default(self):
-        alarm = Alarm('name', 'counter_name', 'eq', 2.0, 'sum', 60)
+        alarm = Alarm(name='name',
+                      counter_name='counter_name',
+                      comparison_operator='eq',
+                      threshold=2.0,
+                      statistic='sum',
+                      evaluation_period=1,
+                      aggregate_period=60
+                      )
+
+        self.assertEqual(alarm.id, None)
+        self.assertEqual(alarm.enabled, True)
         self.assertEqual(alarm.name, 'name')
+        self.assertEqual(alarm.description, None)
         self.assertEqual(alarm.counter_name, 'counter_name')
         self.assertEqual(alarm.comparison_operator, 'eq')
         self.assertEqual(alarm.threshold, 2.0)
         self.assertEqual(alarm.statistic, 'sum')
-        self.assertEqual(alarm.period, 60)
-        self.assertTrue(alarm.resource_id is None)
-        self.assertTrue(alarm.ok_action is None)
-        self.assertTrue(alarm.alarm_action is None)
-        self.assertTrue(alarm.insufficient_data_action is None)
+        self.assertEqual(alarm.aggregate_period, 60)
+        self.assertEqual(alarm.evaluation_period, 1)
+        self.assertEqual(alarm.ok_actions, [])
+        self.assertEqual(alarm.alarm_actions, [])
+        self.assertEqual(alarm.insufficient_data_actions, [])
 
     def test_create_invalid_alarm(self):
-        self.assertRaises(InvalidComparisonOperator, Alarm, 'name',
-                          'counter_name', 'invalid_operator', 2.0, 'avg', 60)
+        self.assertRaises(InvalidComparisonOperator, Alarm,
+                          name='name',
+                          counter_name='counter_name',
+                          comparison_operator='invalid_operator',
+                          threshold=2.0,
+                          statistic='average',
+                          evaluation_period=1,
+                          aggregate_period=60)
 
-    def test_not_match_meter(self):
-        meter = {'counter_name': 'other_metric'}
-        alarm = Alarm(**TEST_ALARM)
-        self.assertFalse(alarm.match_meter(meter))
-
-    def test_match_meter(self):
-        a_id = self.id()
-        meter = {
-            'counter_name': TEST_ALARM['counter_name'],
-            'resource_id': a_id,
-        }
-        alarm = Alarm(**TEST_ALARM)
-        alarm.resource_id = a_id
-        self.assertTrue(alarm.match_meter(meter))
-
-    def test_match_meter_without_resource_id(self):
-        meter = {'counter_name': TEST_ALARM['counter_name']}
-        alarm = Alarm(**TEST_ALARM)
-        self.assertTrue(alarm.match_meter(meter))
+        self.assertRaises(AlarmParameterUnknown, Alarm,
+                          name='name',
+                          counter_name='counter_name',
+                          comparison_operator='ge',
+                          threshold=2.0,
+                          statistic='average',
+                          evaluation_period=1,
+                          aggregate_period=60,
+                          invalid_parameter="invalid")
 
     def test_alarm_kept_state(self):
-        meter = {'counter_name': TEST_ALARM['counter_name']}
+        aggregates = [{'average': 2.0}, {'average': 2.0}]
+
         alarm = Alarm(**TEST_ALARM)
         alarm.state = ALARM_OK
-
-        conn = self.mox.CreateMock(storage.base.Connection)
-        conn.get_meter_statistics(
-            IgnoreArg(),
-            period=alarm.period
-        ).AndReturn([{'avg': 1.0, 'period': alarm.period,
-                      'duration': float(alarm.period) / 60.0}])
-
-        self.mox.ReplayAll()
-
-        alarm.check_state(conn, meter)
+        alarm.check_state(aggregates)
 
         self.assertEqual(alarm.state, ALARM_OK)
         self.assertFalse(os.path.exists('ceilometer_alarm_test_alarm'))
         self.assertFalse(os.path.exists('ceilometer_alarm_test_ok'))
         self.assertFalse(os.path.exists(
             'ceilometer_alarm_test_insufficient_data'))
-        self.mox.VerifyAll()
 
     def test_alarm_change_state_to_alarm(self):
-        meter = {'counter_name': TEST_ALARM['counter_name']}
+        aggregates = [{'average': 3.0}, {'average': 3.0}]
+
         alarm = Alarm(**TEST_ALARM)
-
-        conn = self.mox.CreateMock(storage.base.Connection)
-        conn.get_meter_statistics(
-            IgnoreArg(),
-            period=alarm.period
-        ).AndReturn([{'avg': 2.0, 'period': alarm.period,
-                      'duration': float(alarm.period) / 60.0}])
-
-        self.mox.ReplayAll()
-
-        alarm.check_state(conn, meter)
+        alarm.check_state(aggregates)
 
         self.assertEqual(alarm.state, ALARM_ALARM)
         self.assertTrue(os.path.exists('ceilometer_alarm_test_alarm'))
-        self.mox.VerifyAll()
 
     def test_alarm_change_state_to_ok(self):
-        meter = {'counter_name': TEST_ALARM['counter_name']}
+        aggregates = [{'average': 1.0}, {'average': 1.0}]
         alarm = Alarm(**TEST_ALARM)
 
-        conn = self.mox.CreateMock(storage.base.Connection)
-        conn.get_meter_statistics(
-            IgnoreArg(),
-            period=alarm.period
-        ).AndReturn([{'avg': 0.0, 'period': alarm.period,
-                      'duration': float(alarm.period) / 60.0}])
-
-        self.mox.ReplayAll()
-
-        alarm.check_state(conn, meter)
+        alarm.check_state(aggregates)
 
         self.assertEqual(alarm.state, ALARM_OK)
         self.assertTrue(os.path.exists('ceilometer_alarm_test_ok'))
-        self.mox.VerifyAll()
 
     def test_alarm_change_state_to_insufficient_data(self):
-        meter = {'counter_name': TEST_ALARM['counter_name']}
+        aggregates = []
         alarm = Alarm(**TEST_ALARM)
         alarm.state = ALARM_OK
 
-        conn = self.mox.CreateMock(storage.base.Connection)
-        conn.get_meter_statistics(
-            IgnoreArg(),
-            period=alarm.period
-        ).AndReturn([{'avg': 0.0, 'period': alarm.period,
-                      'duration': 0.0}])
-
-        self.mox.ReplayAll()
-        alarm.check_state(conn, meter)
+        alarm.check_state(aggregates)
 
         self.assertEqual(alarm.state, ALARM_INSUFFICIENT_DATA)
         self.assertTrue(os.path.exists(
             'ceilometer_alarm_test_insufficient_data'))
-        self.mox.VerifyAll()
 
     def test_alarm_execute_action_works(self):
         alarm = Alarm(**TEST_ALARM)
-        self.assertTrue(alarm._execute('touch ceilometer_alarm_test_ok',
-                                       {'sum': 6.0}))
+        self.assertTrue(alarm._execute('touch ceilometer_alarm_test_ok'))
 
     def test_alarm_execute_action_fails(self):
         alarm = Alarm(**TEST_ALARM)
-        self.assertFalse(alarm._execute('invalidcommand', {'sum': 6}))
+        self.assertFalse(alarm._execute('invalidcommand'))
+
+    def test_aggregated_metric_update(self):
+        meter = {'counter_name': 'storage.objects', 'counter_volume': 6.0}
+        aggregates = [{'average': 3.0, 'sum': 6.0, 'maximum': 4.0,
+                       'minimum': 2.0, 'sample_count': 2,
+                       'timestamp': timeutils.utcnow()}]
+        alarm = Alarm(**TEST_ALARM)
+        alarm.update_aggregated_metric_data(meter, aggregates)
+        assert aggregates[0]['sum'] == 12.0
+        assert aggregates[0]['maximum'] == 6.0
+        assert aggregates[0]['minimum'] == 2.0
+        assert aggregates[0]['sample_count'] == 3.0
+        assert aggregates[0]['average'] == 4.0
+
+    def test_aggregated_metric_update_minimum(self):
+        meter = {'counter_name': 'storage.objects', 'counter_volume': 0.0}
+        aggregates = [{'average': 3.0, 'sum': 6.0, 'maximum': 4.0,
+                       'minimum': 2.0, 'sample_count': 2,
+                       'timestamp': timeutils.utcnow()}]
+        alarm = Alarm(**TEST_ALARM)
+        alarm.update_aggregated_metric_data(meter, aggregates)
+        assert aggregates[0]['sum'] == 6.0
+        assert aggregates[0]['maximum'] == 4.0
+        assert aggregates[0]['minimum'] == 0.0
+        assert aggregates[0]['sample_count'] == 3.0
+        assert aggregates[0]['average'] == 2.0
+
+    def test_aggregated_metric_update_new_aggregates(self):
+        meter = {'counter_name': 'storage.objects', 'counter_volume': 2.0}
+        aggregates = []
+        alarm = Alarm(**TEST_ALARM)
+        alarm.update_aggregated_metric_data(meter, aggregates)
+        assert len(aggregates) == 1
+        assert aggregates[0]['sum'] == 2.0
+        assert aggregates[0]['maximum'] == 2.0
+        assert aggregates[0]['minimum'] == 2.0
+        assert aggregates[0]['sample_count'] == 1.0
+        assert aggregates[0]['average'] == 2.0
+
+    def test_aggregated_metric_update_previous_aggregates_expired(self):
+        meter = {'counter_name': 'storage.objects', 'counter_volume': 2.0}
+        aggregates = [{'average': 3.0, 'sum': 6.0, 'maximum': 4.0,
+                       'minimum': 2.0, 'sample_count': 2,
+                       'timestamp': timeutils.utcnow() -
+                       datetime.timedelta(seconds=1000000)}]
+
+        alarm = Alarm(**TEST_ALARM)
+        alarm.update_aggregated_metric_data(meter, aggregates)
+        print aggregates
+        assert len(aggregates) == 2
+        assert aggregates[0]['sum'] == 2.0
+        assert aggregates[0]['maximum'] == 2.0
+        assert aggregates[0]['minimum'] == 2.0
+        assert aggregates[0]['sample_count'] == 1.0
+        assert aggregates[0]['average'] == 2.0
