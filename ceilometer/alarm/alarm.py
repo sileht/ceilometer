@@ -61,7 +61,7 @@ class Alarm(object):
         self.evaluation_period = kwargs.pop('evaluation_period')
         self.aggregate_period = kwargs.pop('aggregate_period')
 
-        self.state = kwargs.pop('state', ALARM_INSUFFICIENT_DATA)
+        self.state = kwargs.pop('state', None)
         self.state_timestamp = kwargs.pop('state_timestamp',
                                           timeutils.utcnow())
 
